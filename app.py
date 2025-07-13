@@ -30,7 +30,7 @@ $$
 st.markdown("""
 ### 📐 Rumus ROP:
 $$
-ROP = \\text{Permintaan Harian} \\times \\text{Waktu Tunggu}
+ROP = (\\text{Permintaan Harian} \\times \\text{Waktu Tunggu}) + \\text{Stok Pengaman}
 $$
 """)
 
@@ -39,6 +39,8 @@ D = st.number_input("Permintaan Tahunan (D)", value=1200.0, min_value=1.0, help=
 S = st.number_input("Biaya Pemesanan per Order (S)", value=75000.0, min_value=1.0, help="Biaya yang dikeluarkan setiap kali melakukan pemesanan.")
 H = st.number_input("Biaya Penyimpanan per Unit per Tahun (H)", value=2500.0, min_value=1.0, help="Biaya untuk menyimpan satu unit barang selama satu tahun.")
 LT = st.number_input("Waktu Tunggu Pengiriman (Lead Time) dalam Hari", value=7.0, min_value=0.0, help="Jumlah hari yang dibutuhkan dari pemesanan hingga barang diterima.")
+safety_stock = st.number_input("Stok Pengaman (Safety Stock)", value=0.0, min_value=0.0, help="Stok tambahan yang disimpan untuk berjaga-jaga terhadap fluktuasi permintaan atau waktu tunggu.")
+
 
 if D > 0 and S > 0 and H > 0:
     # Perhitungan EOQ
@@ -60,7 +62,7 @@ if D > 0 and S > 0 and H > 0:
 
     # Perhitungan ROP
     permintaan_harian = D / 365 # Asumsi 365 hari dalam setahun
-    ROP = permintaan_harian * LT
+    ROP = (permintaan_harian * LT) + safety_stock
 
     st.success(f"📈 Titik Pemesanan Ulang (ROP): {ROP:.2f} unit")
 
@@ -69,13 +71,14 @@ if D > 0 and S > 0 and H > 0:
     ### 🔍 Proses Perhitungan ROP:
     Permintaan Tahunan (D) = %.0f unit/tahun
     Waktu Tunggu (Lead Time) = %.0f hari
+    Stok Pengaman = %.0f unit
 
     Permintaan Harian = D / 365 = %.0f / 365 = %.2f unit/hari
 
     $$
-    ROP = \\text{Permintaan Harian} \\times \\text{Waktu Tunggu} = %.2f \\times %.0f = %.2f
+    ROP = (\\text{Permintaan Harian} \\times \\text{Waktu Tunggu}) + \\text{Stok Pengaman} = (%.2f \\times %.0f) + %.0f = %.2f
     $$
-    """ % (D, LT, D, permintaan_harian, permintaan_harian, LT, ROP))
+    """ % (D, LT, safety_stock, D, permintaan_harian, permintaan_harian, LT, safety_stock, ROP))
 
 
     # Grafik total biaya
@@ -109,11 +112,85 @@ if D > 0 and S > 0 and H > 0:
             - Titik minimum pada grafik menunjukkan jumlah pemesanan optimal (EOQ), di mana total biaya persediaan (biaya pemesanan + biaya penyimpanan) adalah yang terendah.
             - Di kiri EOQ: Terlalu sering memesan, menyebabkan biaya pemesanan tinggi.
             - Di kanan EOQ: Jumlah persediaan yang disimpan besar, menyebabkan biaya penyimpanan tinggi.
-        - **EOQ (Economic Order Quantity):** Jumlah unit yang harus dipesan setiap kali untuk meminimalkan total biaya persediaan.
-        - **ROP (Reorder Point):** Tingkat persediaan di mana pesanan baru harus ditempatkan untuk menghindari kehabisan stok selama waktu tunggu pengiriman.
         """)
     else:
         st.warning("Rentang jumlah pemesanan (Q) tidak valid untuk grafik. Sesuaikan nilai input.")
+
+    # --- Grafik Simulasi Tingkat Persediaan (ROP) ---
+    st.markdown("### 📈 Simulasi Tingkat Persediaan")
+
+    # Simulation parameters
+    sim_days = 90 # Simulate for 90 days
+    inventory_level = [EOQ + safety_stock] # Start with initial inventory (EOQ + safety stock)
+    days = [0]
+    orders_placed = []
+    orders_received = []
+    current_inventory = EOQ + safety_stock
+    order_in_transit = [] # Stores (arrival_day, quantity)
+
+    for day in range(1, sim_days + 1):
+        current_inventory -= permintaan_harian
+        
+        # Check for incoming orders
+        newly_received_orders = []
+        for i, (arrival_day, quantity) in enumerate(order_in_transit):
+            if day >= arrival_day:
+                current_inventory += quantity
+                newly_received_orders.append(i)
+                orders_received.append(day)
+        
+        # Remove received orders from in_transit list (iterate backwards to avoid index issues)
+        for i in sorted(newly_received_orders, reverse=True):
+            order_in_transit.pop(i)
+
+        # Check if ROP is hit and place an order
+        # Place an order if current inventory is at or below ROP AND no order is currently in transit
+        # This prevents multiple orders being placed for the same cycle if inventory stays low
+        if current_inventory <= ROP and not any(q > 0 for _, q in order_in_transit):
+            orders_placed.append(day)
+            order_arrival_day = day + LT
+            order_in_transit.append((order_arrival_day, EOQ))
+            
+        inventory_level.append(max(0, current_inventory)) # Inventory cannot go below zero
+        days.append(day)
+
+    fig_rop, ax_rop = plt.subplots(figsize=(10, 6))
+    ax_rop.plot(days, inventory_level, label="Tingkat Persediaan", color='green')
+    ax_rop.axhline(ROP, color='purple', linestyle=':', label=f"ROP = {ROP:.0f}")
+    ax_rop.axhline(0, color='black', linestyle='-', linewidth=0.8) # Zero inventory line
+
+    # Mark order placements and receipts
+    # Use a set to avoid duplicate labels in legend if multiple lines are plotted
+    labels_placed = set()
+    labels_received = set()
+
+    for op_day in orders_placed:
+        label = "Pemesanan Ditempatkan"
+        ax_rop.axvline(op_day, color='blue', linestyle='--', alpha=0.6, label=label if label not in labels_placed else "")
+        labels_placed.add(label)
+
+    for or_day in orders_received:
+        label = "Pemesanan Diterima"
+        ax_rop.axvline(or_day, color='orange', linestyle='--', alpha=0.6, label=label if label not in labels_received else "")
+        labels_received.add(label)
+
+    ax_rop.set_xlabel("Hari")
+    ax_rop.set_ylabel("Tingkat Persediaan (Unit)")
+    ax_rop.set_title("Simulasi Tingkat Persediaan dengan EOQ dan ROP")
+    ax_rop.legend()
+    ax_rop.grid(True, linestyle='--', alpha=0.7)
+
+    buf_rop = io.BytesIO()
+    fig_rop.savefig(buf_rop, format="png", bbox_inches="tight")
+    st.image(buf_rop, width=700)
+
+    st.markdown("""
+    - **Grafik Simulasi Tingkat Persediaan:**
+        - Garis hijau menunjukkan fluktuasi tingkat persediaan dari waktu ke waktu.
+        - Garis ungu putus-putus menunjukkan Reorder Point (ROP). Ketika tingkat persediaan mencapai atau di bawah garis ini, pesanan baru ditempatkan.
+        - Garis vertikal biru putus-putus menunjukkan hari di mana pesanan baru ditempatkan.
+        - Garis vertikal oranye putus-putus menunjukkan hari di mana pesanan yang ditempatkan sebelumnya diterima.
+    """)
 
 else:
     st.warning("Masukkan nilai D, S, dan H yang valid (semua harus > 0).")
